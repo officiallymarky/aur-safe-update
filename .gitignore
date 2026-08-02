@@ -1,0 +1,12 @@
+# Local search indexes
+.ck/
+
+# Local environment files
+.env
+.env.*
+!.env.example
+
+# Editor and operating-system files
+*.swp
+*~
+.DS_Store

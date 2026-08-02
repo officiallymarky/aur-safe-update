@@ -1,0 +1,253 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+AURWATCH_API="${AURWATCH_API:-https://aurwatch.org/api/v1/check}"
+AUR_RPC="${AUR_RPC:-https://aur.archlinux.org/rpc/v5/info}"
+
+# Default: API errors, stale scans, and unknown verdicts block the update.
+# Set AURWATCH_FAIL_OPEN=1 to require interactive confirmation instead.
+FAIL_OPEN="${AURWATCH_FAIL_OPEN:-0}"
+
+case "$FAIL_OPEN" in
+    0 | 1) ;;
+    *)
+        echo "AURWATCH_FAIL_OPEN must be either 0 or 1." >&2
+        exit 64
+        ;;
+esac
+
+if [[ "$AURWATCH_API" != https://* || "$AUR_RPC" != https://* ]]; then
+    echo "AURWATCH_API and AUR_RPC must use HTTPS." >&2
+    exit 64
+fi
+
+for cmd in curl jq pacman date; do
+    command -v "$cmd" >/dev/null || {
+        echo "Missing dependency: $cmd" >&2
+        exit 127
+    }
+done
+
+if command -v paru >/dev/null; then
+    helper="$(command -v paru)"
+    list_cmd=("$helper" -Qua)
+elif command -v yay >/dev/null; then
+    helper="$(command -v yay)"
+    list_cmd=("$helper" -Qua --aur)
+else
+    echo "Neither paru nor yay was found." >&2
+    exit 127
+fi
+
+update_cmd=("$helper" -Syu)
+
+# Determine the upgrades before downloading PKGBUILDs or source archives.
+if ! update_output="$("${list_cmd[@]}")"; then
+    echo "Could not enumerate AUR updates; refusing to continue." >&2
+    exit 2
+fi
+
+# Only consider installed foreign packages. A failed pacman query must not make
+# the candidate list appear empty and bypass the checks.
+if ! foreign_output="$(pacman -Qmq)"; then
+    echo "Could not enumerate installed foreign packages; refusing to continue." >&2
+    exit 2
+fi
+
+declare -A foreign=()
+declare -A seen=()
+
+while IFS= read -r pkg; do
+    [[ -n "$pkg" ]] && foreign["$pkg"]=1
+done <<< "$foreign_output"
+
+updates=()
+
+while IFS= read -r line; do
+    pkg="${line%%[[:space:]]*}"
+
+    if [[ -n "$pkg" &&
+          -n "${foreign[$pkg]+present}" &&
+          -z "${seen[$pkg]+present}" ]]; then
+        updates+=("$pkg")
+        seen["$pkg"]=1
+    fi
+done <<< "$update_output"
+
+if ((${#updates[@]} == 0)); then
+    echo "AURWatch: no AUR upgrades found."
+    exec "${update_cmd[@]}" "$@"
+fi
+
+echo "AURWatch: checking ${#updates[@]} AUR update(s)..."
+
+blocked=0
+review=0
+
+mark_review_required() {
+    if ((FAIL_OPEN)); then
+        review=1
+    else
+        blocked=1
+    fi
+}
+
+for pkg in "${updates[@]}"; do
+    page="https://aurwatch.org/package/$pkg"
+
+    if ! verdict="$(
+        curl --disable --proto '=https' -fsS \
+            --connect-timeout 5 \
+            --max-time 15 \
+            --retry 1 \
+            -G \
+            --data-urlencode "pkg=$pkg" \
+            "$AURWATCH_API"
+    )"; then
+        echo "[API ERROR] $pkg: request failed"
+        echo "            $page"
+        mark_review_required
+        continue
+    fi
+
+    if ! jq -e --arg pkg "$pkg" \
+        'type == "object" and .pkg == $pkg' \
+        >/dev/null <<< "$verdict"; then
+        echo "[API ERROR] $pkg: invalid or mismatched response"
+        echo "            $page"
+        mark_review_required
+        continue
+    fi
+
+    status="$(
+        jq -r '
+            if (.status | type) == "string"
+            then (.status | ascii_downcase)
+            else "unknown"
+            end
+        ' <<< "$verdict"
+    )"
+
+    scanned="$(
+        jq -r '
+            if (.last_scanned | type) == "string"
+            then .last_scanned
+            else empty
+            end
+        ' <<< "$verdict"
+    )"
+
+    rules="$(
+        jq -r '
+            (.rules // [])
+            | if type == "array" then . else [] end
+            | [
+                .[]
+                | if type == "string" then .
+                  elif type == "object" then (
+                      .description //
+                      .name //
+                      .rule //
+                      .id //
+                      tostring
+                  )
+                  else tostring
+                  end
+                | tostring
+            ]
+            | join("; ")
+        ' <<< "$verdict"
+    )"
+
+    # A high verdict always blocks, even when its freshness cannot be
+    # confirmed and fail-open review mode is enabled.
+    if [[ "$status" == "high" ]]; then
+        echo "[HIGH]    $pkg${rules:+: $rules}"
+        echo "          $page"
+        blocked=1
+        continue
+    fi
+
+    # Confirm that AURWatch scanned the current AUR recipe rather than an
+    # earlier revision. Missing or malformed metadata is never treated as fresh.
+    stale=1
+    stale_reason=""
+
+    if [[ -z "$scanned" ]]; then
+        stale_reason="scan timestamp is missing"
+    elif ! scanned_epoch="$(date -d "$scanned" +%s 2>/dev/null)"; then
+        stale_reason="scan timestamp is invalid"
+    elif ! aur_info="$(
+        curl --disable --proto '=https' -fsS \
+            --connect-timeout 5 \
+            --max-time 15 \
+            --retry 1 \
+            -G \
+            --data-urlencode "arg[]=$pkg" \
+            "$AUR_RPC"
+    )"; then
+        stale_reason="current AUR metadata could not be retrieved"
+    elif ! aur_modified="$(
+        jq -er --arg pkg "$pkg" '
+            .results[]?
+            | select(.Name == $pkg)
+            | .LastModified
+        ' <<< "$aur_info"
+    )" || [[ ! "$aur_modified" =~ ^[0-9]+$ ]]; then
+        stale_reason="current AUR metadata is missing or invalid"
+    elif ((scanned_epoch < aur_modified)); then
+        stale_reason="current AUR recipe is newer than its scan"
+    else
+        stale=0
+    fi
+
+    if ((stale)); then
+        echo "[STALE]   $pkg: $stale_reason"
+        echo "          $page"
+        mark_review_required
+        continue
+    fi
+
+    case "$status" in
+        clean)
+            echo "[CLEAN]   $pkg"
+            ;;
+
+        low)
+            echo "[LOW]     $pkg${rules:+: $rules}"
+            echo "          $page"
+            ;;
+
+        medium)
+            echo "[MEDIUM]  $pkg${rules:+: $rules}"
+            echo "          $page"
+            review=1
+            ;;
+
+
+        *)
+            echo "[UNKNOWN] $pkg: unrecognized AURWatch verdict"
+            echo "          $page"
+            mark_review_required
+            ;;
+    esac
+done
+
+if ((blocked)); then
+    echo
+    echo "Update blocked. Review the package(s) above." >&2
+    exit 3
+fi
+
+if ((review)); then
+    if [[ ! -t 0 ]]; then
+        echo "Interactive review required; aborting." >&2
+        exit 4
+    fi
+
+    echo
+    read -r -p "Continue despite warnings? [y/N] " answer
+    [[ "$answer" =~ ^[Yy]$ ]] || exit 4
+fi
+
+exec "${update_cmd[@]}" "$@"
