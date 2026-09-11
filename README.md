@@ -18,7 +18,8 @@ The default policy is fail-closed:
 - `low`: display the findings and continue.
 - `medium`: require interactive confirmation.
 - `high`: block the update.
-- API errors, invalid responses, missing metadata, stale scans, and unknown verdicts: block the update.
+- stale scans, where the verdict may not cover the current recipe: require interactive confirmation.
+- API errors, invalid responses, missing metadata, and unknown verdicts: block the update.
 
 All candidate packages are checked before the helper starts. One blocked package prevents the entire update.
 
@@ -81,13 +82,15 @@ AURWatch check.
 
 ### Fail-open review mode
 
-To turn API, freshness, and unknown-verdict failures into an interactive warning instead of a hard block:
+To turn API and unknown-verdict failures into an interactive warning instead of a hard block:
 
 ```bash
 AURWATCH_FAIL_OPEN=1 aur-safe-update
 ```
 
-This mode still blocks `high` verdicts. It also refuses to continue when standard input is not a terminal, because confirmation cannot be obtained safely.
+This mode still blocks `high` verdicts. Stale scans always require interactive
+confirmation in both modes. This mode also refuses to continue when standard
+input is not a terminal, because confirmation cannot be obtained safely.
 
 `AURWATCH_FAIL_OPEN` accepts only `0` or `1`.
 
@@ -157,7 +160,7 @@ updating.
   query command and `pacman -Qmq` directly to identify the failing command.
 - **Exit 3:** at least one result blocked the transaction. Review every package
   URL printed above the final error.
-- **Exit 4:** a medium or fail-open result required confirmation, but input was
+- **Exit 4:** a medium, stale, or fail-open result required confirmation, but input was
   non-interactive or confirmation was declined. Run from a terminal to review
   interactively; do not pipe an automatic `yes`.
 - **API or AUR RPC outage:** the default policy blocks the update. Fail-open

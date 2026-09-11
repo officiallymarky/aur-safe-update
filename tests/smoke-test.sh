@@ -127,9 +127,16 @@ run_case \
     'MOCK_VERDICT={"pkg":"other","status":"clean","last_scanned":"2026-08-01T00:00:00Z"}'
 
 run_case \
-    missing-aur-metadata 3 '' \
-    'current AUR metadata is missing or invalid' '' \
+    missing-aur-metadata 4 '' \
+    '[STALE]   demo: current AUR metadata is missing or invalid' \
+    'Interactive review required' \
     'MOCK_AUR_INFO={"results":[]}'
+
+run_case \
+    stale-newer-recipe 4 '' \
+    '[STALE]   demo: current AUR recipe is newer than its scan' \
+    'Interactive review required' \
+    'MOCK_VERDICT={"pkg":"demo","status":"clean","rules":[],"last_scanned":"1970-01-01T00:00:00Z"}'
 
 run_case \
     unknown-noninteractive-fail-open 4 '' \

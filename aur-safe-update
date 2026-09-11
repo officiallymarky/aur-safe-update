@@ -4,8 +4,9 @@ set -Eeuo pipefail
 AURWATCH_API="${AURWATCH_API:-https://aurwatch.org/api/v1/check}"
 AUR_RPC="${AUR_RPC:-https://aur.archlinux.org/rpc/v5/info}"
 
-# Default: API errors, stale scans, and unknown verdicts block the update.
-# Set AURWATCH_FAIL_OPEN=1 to require interactive confirmation instead.
+# Default: API errors and unknown verdicts block the update; stale scans
+# require interactive confirmation. Set AURWATCH_FAIL_OPEN=1 to also require
+# interactive confirmation on API errors and unknown verdicts.
 FAIL_OPEN="${AURWATCH_FAIL_OPEN:-0}"
 
 case "$FAIL_OPEN" in
@@ -204,7 +205,11 @@ for pkg in "${updates[@]}"; do
     if ((stale)); then
         echo "[STALE]   $pkg: $stale_reason"
         echo "          $page"
-        mark_review_required
+        # A stale scan is a freshness warning, not a danger signal: the verdict
+        # may not cover the current recipe, but the user can choose to proceed
+        # after review. Verification failures (API errors, unknown verdicts)
+        # remain fail-closed unless AURWATCH_FAIL_OPEN=1; high stays blocked.
+        review=1
         continue
     fi
 
