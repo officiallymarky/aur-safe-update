@@ -43,9 +43,20 @@ fi
 update_cmd=("$helper" -Syu)
 
 # Determine the upgrades before downloading PKGBUILDs or source archives.
-if ! update_output="$("${list_cmd[@]}")"; then
-    echo "Could not enumerate AUR updates; refusing to continue." >&2
-    exit 2
+list_status=0
+update_output="$("${list_cmd[@]}")" || list_status=$?
+
+# paru and yay report "nothing to do" for -Qua with exit status 1 and no
+# output, following the pacman -Qu convention. Only that exact result means
+# the candidate set is empty; any other failure still refuses to continue, so
+# a broken query cannot silently shrink the candidate set.
+if ((list_status != 0)); then
+    if ((list_status == 1)) && [[ -z "$update_output" ]]; then
+        update_output=""
+    else
+        echo "Could not enumerate AUR updates; refusing to continue." >&2
+        exit 2
+    fi
 fi
 
 # Only consider installed foreign packages. A failed pacman query must not make

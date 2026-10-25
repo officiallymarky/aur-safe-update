@@ -158,6 +158,10 @@ updating.
 
 - **Exit 2:** the script could not establish the candidate set. Run the helper's
   query command and `pacman -Qmq` directly to identify the failing command.
+- **No AUR upgrades:** `paru -Qua` and `yay -Qua` exit with status `1` and no
+  output when nothing is pending, following the `pacman -Qu` convention. The
+  script treats only that result as an empty candidate set and still delegates
+  the full update; any other non-zero query result is exit `2`.
 - **Exit 3:** at least one result blocked the transaction. Review every package
   URL printed above the final error.
 - **Exit 4:** a medium, stale, or fail-open result required confirmation, but input was

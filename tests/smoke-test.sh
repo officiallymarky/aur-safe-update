@@ -156,6 +156,24 @@ run_case \
     'MOCK_UPDATES=' \
     'MOCK_FOREIGN='
 
+# paru and yay exit 1 with no output when no AUR upgrades are pending.
+run_case \
+    no-aur-updates-status-1 0 '-Syu --needed' \
+    'no AUR upgrades found' '' \
+    'MOCK_UPDATES=' \
+    'MOCK_FOREIGN=' \
+    'MOCK_LIST_STATUS=1'
+
+run_case \
+    list-failure 2 '' '' \
+    'Could not enumerate AUR updates' \
+    'MOCK_LIST_STATUS=2'
+
+run_case \
+    list-failure-with-output 2 '' '' \
+    'Could not enumerate AUR updates' \
+    'MOCK_LIST_STATUS=1'
+
 run_case \
     insecure-endpoint 64 '' '' \
     'AURWATCH_API and AUR_RPC must use HTTPS' \
